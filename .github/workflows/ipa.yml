@@ -1,0 +1,127 @@
+# IPA of one game (default Breath of the Wild) from the NSPs in a release (upload-inputs.ps1), built with seedds/nxnative.
+# The IPA lands in release ipa-<run id> as ~1.9 GB parts (get-ipa.ps1 joins them). probe = only check the runner and tools.
+# The same file runs in the public runner repo (free macOS minutes): its STORAGE_TOKEN secret reaches the private repo,
+# which keeps every game file, the IPA and the logs; only this file and the run's console output are public.
+name: ipa
+on:
+  workflow_dispatch:
+    inputs:
+      probe:
+        description: only check the runner (disk, CPU, Xcode, tools), no game files
+        type: boolean
+        default: false
+      nxnative:
+        description: seedds/nxnative commit
+        default: fb842f684d6b6b5a5d013680aed5dc036d62bbcb
+      game:
+        description: base game title ID (its nxnative profile)
+        default: 01007EF00011E000
+      release:
+        description: release holding the game's NSP parts
+        default: inputs
+
+permissions:
+  contents: write
+
+env:
+  GH_TOKEN: ${{ secrets.STORAGE_TOKEN || github.token }}
+  GH_REPO: arnavaggarwal-dev/nxnative-build
+  DM_GAME: ${{ inputs.game }}
+
+jobs:
+  build:
+    runs-on: macos-26
+    timeout-minutes: 360
+    steps:
+      - name: Runner
+        run: |
+          sysctl -n machdep.cpu.brand_string hw.ncpu hw.memsize
+          xcode-select -p; xcodebuild -version; ls /Applications | grep -i xcode
+          ls -la "/System/Library/Fonts/Supplemental/Arial Unicode.ttf"
+          df -h /
+
+      - name: Free disk (other Xcodes, Android SDK)
+        run: |
+          keep=$(xcode-select -p | sed 's|/Contents/Developer||')
+          for x in /Applications/Xcode*.app; do
+            [ -L "$x" ] || [ "$x" = "$keep" ] || sudo rm -rf "$x" &
+          done
+          sudo rm -rf "${ANDROID_HOME:-/nonexistent}" ~/Library/Android &
+          wait
+          df -h /
+
+      - uses: actions/checkout@v4
+
+      - name: Tools
+        run: |
+          brew install xcodegen zstd spirv-cross glslang
+          brew install --cask dotnet-sdk
+          python3 -m pip install --break-system-packages lz4 capstone fonttools "backports.zstd; python_version < '3.14'"
+          python3 -c 'import lz4.block, capstone, fontTools; print("python ok")'
+          dotnet --list-sdks
+          git init -q nx
+          git -C nx fetch -q --depth 1 https://github.com/seedds/nxnative.git ${{ inputs.nxnative }}
+          git -C nx checkout -q FETCH_HEAD
+          dotnet build nx/dm/tools/nx_extract -c Release -o "$RUNNER_TEMP/nx_extract" -v quiet -nologo
+
+      # the lock pins upstream's Metal compiler (newer than any runner Xcode) and its spirv-cross binary hash
+      # (Homebrew re-signs on pour, so the same 1.4.363 bottle hashes differently): re-lock to this runner's tools.
+      # That changes the chain version, so the profile's header is rewritten (the script only does it for provisional
+      # profiles) and the c1 list is carried over as upstream does: same translator and spirv-cross release, same MSL.
+      - name: Shader tool lock
+        run: |
+          xcrun -sdk iphoneos metal --version | head -1; brew list --versions spirv-cross
+          bad=$(python3 nx/dm/gfx/tools/dmsh_chain.py --check-tools || true)
+          if [ -n "$bad" ]; then
+            echo "$bad"
+            if echo "$bad" | grep -v -E ': (spirv-cross|metal_macosx|metal_iphoneos): '; then echo "::error::tool mismatch beyond spirv-cross / Metal"; exit 1; fi
+            brew list --versions spirv-cross | grep -q ' 1\.4\.363' || { echo "::error::spirv-cross is not upstream's 1.4.363"; exit 1; }
+            python3 nx/dm/gfx/tools/dmsh_chain.py --update-lock
+            V=$(python3 nx/dm/gfx/tools/dmsh_chain.py --header)
+            perl -pi -e "s/^# chain b-([0-9a-f]+)/# chain b-$V (carried over from b-\$1: only the Metal compiler changed, same MSL)/ if \$. == 1" "nx/dm/games/$DM_GAME/c1_full.tsv"
+          fi
+          python3 nx/dm/gfx/tools/dmsh_chain.py --check-tools
+          cat "nx/dm/games/$DM_GAME/dmsh_chain.h"; head -1 "nx/dm/games/$DM_GAME/c1_full.tsv"
+          git -C nx diff --stat
+
+      - name: Download NSPs
+        if: ${{ !inputs.probe }}
+        env:
+          PROD_KEYS: ${{ secrets.PROD_KEYS }}
+        run: |
+          printf '%s' "$PROD_KEYS" > "$RUNNER_TEMP/prod.keys"
+          [ -s "$RUNNER_TEMP/prod.keys" ] || { echo "::error::secret PROD_KEYS is not set"; exit 1; }
+          mkdir -p nsp parts out
+          gh release download "${{ inputs.release }}" -p files.tsv -D parts
+          while IFS=$'\t' read -r id name size; do
+            gh release download "${{ inputs.release }}" -p "$id.part*" -D parts
+            cat parts/$id.part* > "nsp/$name" && rm parts/$id.part*
+            [ "$(stat -f %z "nsp/$name")" = "$size" ] || { echo "size mismatch: $name"; exit 1; }
+          done < parts/files.tsv
+          ls -la nsp; df -h /
+
+      - name: Build IPA
+        if: ${{ !inputs.probe }}
+        timeout-minutes: 330
+        run: |
+          ipa=$(awk -F'\t' '$1 == "ipa" { print $2 }' "nx/dm/games/$DM_GAME/game.tsv")
+          python3 nx/scripts/build_ipa_from_nsp.py nsp -k "$RUNNER_TEMP/prod.keys" -o "$PWD/out/$ipa" --env-file handheld.txt --no-keep-extracted --progress lines
+
+      # ipa.sha256 also carries the IPA's file name, which get-ipa.ps1 restores
+      - name: Upload IPA
+        if: ${{ !inputs.probe }}
+        run: |
+          rm -f nsp/*.nsp
+          cd out
+          ipa=$(ls *.ipa)
+          shasum -a 256 "$ipa" | tee ipa.sha256
+          split -b 1900m -a 2 "$ipa" ipa.part && rm "$ipa"
+          gh release create "ipa-$GITHUB_RUN_ID" ipa.sha256 ipa.part* --title "${ipa%.ipa} IPA (run $GITHUB_RUN_ID)" --notes "$DM_GAME, nxnative ${{ inputs.nxnative }}, handheld (DM_OPMODE=0)"
+
+      # to the private repo's release "logs", not an artifact: a public repo's artifacts are public
+      - name: Logs
+        if: ${{ always() && !inputs.probe }}
+        run: |
+          tar -C nsp -czf "logs-$GITHUB_RUN_ID.tgz" "${DM_GAME}_build/logs" || exit 0
+          gh release view logs > /dev/null 2>&1 || gh release create logs --title logs --notes 'build logs (logs-<run id>.tgz)'
+          gh release upload logs "logs-$GITHUB_RUN_ID.tgz" --clobber

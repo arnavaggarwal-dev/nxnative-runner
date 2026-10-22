@@ -1,0 +1,2 @@
+# baked into the app as dm/env.txt; Documents/env.txt on the iPhone overrides it
+DM_OPMODE=0
