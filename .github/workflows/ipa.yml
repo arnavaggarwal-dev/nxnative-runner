@@ -70,6 +70,8 @@ jobs:
       # profiles) and the c1 list is carried over as upstream does: same translator and spirv-cross release, same MSL.
       - name: Shader tool lock
         run: |
+          # a game without a profile (provisional build) can't load dmsh_chain.py; the lock is global, so any profile does
+          [ -f "nx/dm/games/$DM_GAME/game.tsv" ] || export DM_GAME=01007EF00011E000
           xcrun -sdk iphoneos metal --version | head -1; brew list --versions spirv-cross
           bad=$(python3 nx/dm/gfx/tools/dmsh_chain.py --check-tools || true)
           if [ -n "$bad" ]; then
@@ -91,7 +93,7 @@ jobs:
         run: |
           printf '%s' "$PROD_KEYS" > "$RUNNER_TEMP/prod.keys"
           [ -s "$RUNNER_TEMP/prod.keys" ] || { echo "::error::secret PROD_KEYS is not set"; exit 1; }
-          mkdir -p nsp parts out
+          mkdir -p nsp parts
           gh release download "${{ inputs.release }}" -p files.tsv -D parts
           while IFS=$'\t' read -r id name size; do
             gh release download "${{ inputs.release }}" -p "$id.part*" -D parts
@@ -103,16 +105,15 @@ jobs:
       - name: Build IPA
         if: ${{ !inputs.probe }}
         timeout-minutes: 330
-        run: |
-          ipa=$(awk -F'\t' '$1 == "ipa" { print $2 }' "nx/dm/games/$DM_GAME/game.tsv")
-          python3 nx/scripts/build_ipa_from_nsp.py nsp -k "$RUNNER_TEMP/prod.keys" -o "$PWD/out/$ipa" --env-file handheld.txt --no-keep-extracted --progress lines
+        # the IPA lands in nsp/ under the profile's name (a game without a profile: a provisional profile and a best-effort IPA)
+        run: python3 nx/scripts/build_ipa_from_nsp.py nsp -k "$RUNNER_TEMP/prod.keys" --env-file handheld.txt --no-keep-extracted --progress lines
 
       # ipa.sha256 also carries the IPA's file name, which get-ipa.ps1 restores
       - name: Upload IPA
         if: ${{ !inputs.probe }}
         run: |
           rm -f nsp/*.nsp
-          cd out
+          cd nsp
           ipa=$(ls *.ipa)
           shasum -a 256 "$ipa" | tee ipa.sha256
           split -b 1900m -a 2 "$ipa" ipa.part && rm "$ipa"
@@ -122,6 +123,9 @@ jobs:
       - name: Logs
         if: ${{ always() && !inputs.probe }}
         run: |
-          tar -C nsp -czf "logs-$GITHUB_RUN_ID.tgz" "${DM_GAME}_build/logs" || exit 0
+          # the logs, and for a game without a profile its survey and provisional profile
+          f=$(cd nsp && ls -d "${DM_GAME}_build/logs" "${DM_GAME}_build/profile" "${DM_GAME}_survey" 2> /dev/null) || true
+          [ -n "$f" ] || exit 0
+          tar -C nsp -czf "logs-$GITHUB_RUN_ID.tgz" $f
           gh release view logs > /dev/null 2>&1 || gh release create logs --title logs --notes 'build logs (logs-<run id>.tgz)'
           gh release upload logs "logs-$GITHUB_RUN_ID.tgz" --clobber
