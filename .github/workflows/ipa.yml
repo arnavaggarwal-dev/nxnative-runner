@@ -12,7 +12,7 @@ on:
         default: false
       nxnative:
         description: seedds/nxnative commit
-        default: 11be43d882f279fe27d0914c47f062bf80d7c867
+        default: 7af6fedaad6c4ae536fb42ddac32049a01f0c538
       game:
         description: base game title ID (its nxnative profile)
         default: 01007EF00011E000
