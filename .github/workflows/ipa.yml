@@ -12,7 +12,7 @@ on:
         default: false
       nxnative:
         description: seedds/nxnative commit
-        default: fb842f684d6b6b5a5d013680aed5dc036d62bbcb
+        default: 11be43d882f279fe27d0914c47f062bf80d7c867
       game:
         description: base game title ID (its nxnative profile)
         default: 01007EF00011E000
@@ -63,28 +63,9 @@ jobs:
           git -C nx fetch -q --depth 1 https://github.com/seedds/nxnative.git ${{ inputs.nxnative }}
           git -C nx checkout -q FETCH_HEAD
           dotnet build nx/dm/tools/nx_extract -c Release -o "$RUNNER_TEMP/nx_extract" -v quiet -nologo
-
-      # the lock pins upstream's Metal compiler (newer than any runner Xcode) and its spirv-cross binary hash
-      # (Homebrew re-signs on pour, so the same 1.4.363 bottle hashes differently): re-lock to this runner's tools.
-      # That changes the chain version, so the profile's header is rewritten (the script only does it for provisional
-      # profiles) and the c1 list is carried over as upstream does: same translator and spirv-cross release, same MSL.
-      - name: Shader tool lock
-        run: |
-          # a game without a profile (provisional build) can't load dmsh_chain.py; the lock is global, so any profile does
-          [ -f "nx/dm/games/$DM_GAME/game.tsv" ] || export DM_GAME=01007EF00011E000
+          # since b3d9b24 the NSP script builds the iOS shaders with this runner's own Metal compiler and spirv-cross
+          # (dm/gfx/tools/own_compilers.py): no re-lock of dmsh_chain.lock (an older nxnative commit needs one)
           xcrun -sdk iphoneos metal --version | head -1; brew list --versions spirv-cross
-          bad=$(python3 nx/dm/gfx/tools/dmsh_chain.py --check-tools || true)
-          if [ -n "$bad" ]; then
-            echo "$bad"
-            if echo "$bad" | grep -v -E ': (spirv-cross|metal_macosx|metal_iphoneos): '; then echo "::error::tool mismatch beyond spirv-cross / Metal"; exit 1; fi
-            brew list --versions spirv-cross | grep -q ' 1\.4\.363' || { echo "::error::spirv-cross is not upstream's 1.4.363"; exit 1; }
-            python3 nx/dm/gfx/tools/dmsh_chain.py --update-lock
-            V=$(python3 nx/dm/gfx/tools/dmsh_chain.py --header)
-            perl -pi -e "s/^# chain b-([0-9a-f]+)/# chain b-$V (carried over from b-\$1: only the Metal compiler changed, same MSL)/ if \$. == 1" "nx/dm/games/$DM_GAME/c1_full.tsv"
-          fi
-          python3 nx/dm/gfx/tools/dmsh_chain.py --check-tools
-          cat "nx/dm/games/$DM_GAME/dmsh_chain.h"; head -1 "nx/dm/games/$DM_GAME/c1_full.tsv"
-          git -C nx diff --stat
 
       - name: Download NSPs
         if: ${{ !inputs.probe }}
