@@ -64,6 +64,16 @@ jobs:
           git -C nx checkout -q FETCH_HEAD
           dotnet build nx/dm/tools/nx_extract -c Release -o "$RUNNER_TEMP/nx_extract" -v quiet -nologo
 
+      # a game without a profile boots on this virtual Mac (run-time shader capture, heap check), whose GPU can't make
+      # an MTLResidencySet: go on without one there. On the iPhone the set is made, so the IPA's code path is unchanged.
+      - name: Virtual GPU patch
+        run: |
+          [ -f "nx/dm/games/$DM_GAME/game.tsv" ] && exit 0
+          f=nx/dm/gfx/nvn/nvn_mtl.m
+          perl -pi -e 's/if \(!g_res\) MDIE\("failed to create the MTLResidencySet"\);/if (!g_res) MLOG("no MTLResidencySet (%s): going on without one (virtual GPU)", re.localizedDescription.UTF8String);/; s/\[(g_q4?) addResidencySet:g_res\];/if (g_res) [$1 addResidencySet:g_res];/' "$f"
+          [ "$(grep -c 'if (g_res) \[g_q4\{0,1\} addResidencySet:g_res\]' "$f")" = 2 ] && grep -q 'going on without one' "$f" || { echo "::error::nvn_mtl.m patch did not apply"; exit 1; }
+          git -C nx diff
+
       # the lock pins upstream's Metal compiler (newer than any runner Xcode) and its spirv-cross binary hash
       # (Homebrew re-signs on pour, so the same 1.4.363 bottle hashes differently): re-lock to this runner's tools.
       # That changes the chain version, so the profile's header is rewritten (the script only does it for provisional
