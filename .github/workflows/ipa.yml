@@ -30,7 +30,7 @@ env:
 
 jobs:
   build:
-    runs-on: macos-26
+    runs-on: xcode-27   # macOS 27 image, Xcode 27.1 by default: the Metal compiler nxnative's dmsh_chain.lock tests its shaders with (4eeac03)
     timeout-minutes: 360
     steps:
       - name: Runner
@@ -65,7 +65,8 @@ jobs:
           dotnet build nx/dm/tools/nx_extract -c Release -o "$RUNNER_TEMP/nx_extract" -v quiet -nologo
           # since b3d9b24 the NSP script builds the iOS shaders with this runner's own Metal compiler; spirv-cross is in the repo
           # (dm/gfx/tools/own_compilers.py): no re-lock of dmsh_chain.lock (an older nxnative commit needs one)
-          xcrun -sdk iphoneos metal --version | head -1
+          xcrun -sdk iphoneos metal --version > /dev/null 2>&1 || xcodebuild -downloadComponent MetalToolchain
+          xcodebuild -version; xcrun -sdk iphoneos metal --version | head -1
 
       - name: Download NSPs
         if: ${{ !inputs.probe }}
