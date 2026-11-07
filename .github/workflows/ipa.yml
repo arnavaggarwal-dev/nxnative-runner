@@ -12,7 +12,7 @@ on:
         default: false
       nxnative:
         description: seedds/nxnative commit
-        default: d0b7c846ba6cf5107f5376342418b9af954dacc7
+        default: 581f9c1dbcee690b24f4e2a376ca51e2f4fa07b1
       game:
         description: base game title ID (its nxnative profile)
         default: 01007EF00011E000
@@ -30,9 +30,25 @@ env:
 
 jobs:
   build:
-    runs-on: xcode-27   # macOS 27 image, Xcode 27.1 by default: the Metal compiler nxnative's dmsh_chain.lock tests its shaders with (4eeac03)
+    runs-on: xcode-27   # macOS 27 image with several Xcode 27 builds; "Pick Xcode" selects the one nxnative's lock names
     timeout-minutes: 360
     steps:
+      # nxnative (4eeac03) stops an NVN game's build unless the Metal compiler is the one in dm/gfx/tools/dmsh_chain.lock
+      # (upstream issue #242): select the installed Xcode whose iOS Metal compiler is exactly that one, before Free disk keeps only it
+      - name: Pick Xcode
+        run: |
+          want=$(curl -fsSL "https://raw.githubusercontent.com/seedds/nxnative/${{ inputs.nxnative }}/dm/gfx/tools/dmsh_chain.lock" | awk -F'\t' '$1 == "metal_iphoneos" { print $2 }')
+          [ -n "$want" ] || { echo "::error::no metal_iphoneos line in nxnative's dmsh_chain.lock"; exit 1; }
+          echo "lock wants: $want"; seen=
+          for x in $(ls -d /Applications/Xcode*.app | sort -rV); do
+            [ -L "$x" ] && continue
+            d="$x/Contents/Developer"
+            DEVELOPER_DIR="$d" xcrun -sdk iphoneos metal --version > /dev/null 2>&1 || DEVELOPER_DIR="$d" xcodebuild -downloadComponent MetalToolchain > /dev/null 2>&1 || true
+            have=$(DEVELOPER_DIR="$d" xcrun -sdk iphoneos metal --version 2>/dev/null | head -1); seen="$seen\n  $x: ${have:-no Metal compiler}"
+            if [ "$have" = "$want" ]; then sudo xcode-select -s "$d"; echo "selected $x"; exit 0; fi
+          done
+          printf "::error::no installed Xcode has the locked Metal compiler ($want):$seen\n"; exit 1
+
       - name: Runner
         run: |
           sysctl -n machdep.cpu.brand_string hw.ncpu hw.memsize
@@ -63,9 +79,6 @@ jobs:
           git -C nx fetch -q --depth 1 https://github.com/seedds/nxnative.git ${{ inputs.nxnative }}
           git -C nx checkout -q FETCH_HEAD
           dotnet build nx/dm/tools/nx_extract -c Release -o "$RUNNER_TEMP/nx_extract" -v quiet -nologo
-          # since b3d9b24 the NSP script builds the iOS shaders with this runner's own Metal compiler; spirv-cross is in the repo
-          # (dm/gfx/tools/own_compilers.py): no re-lock of dmsh_chain.lock (an older nxnative commit needs one)
-          xcrun -sdk iphoneos metal --version > /dev/null 2>&1 || xcodebuild -downloadComponent MetalToolchain
           xcodebuild -version; xcrun -sdk iphoneos metal --version | head -1
 
       - name: Download NSPs
