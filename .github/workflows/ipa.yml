@@ -56,13 +56,22 @@ jobs:
           ls -la "/System/Library/Fonts/Supplemental/Arial Unicode.ttf"
           df -h /
 
-      - name: Free disk (other Xcodes, Android SDK)
+      # BotW's IPA (~16 GB) is packed next to the extracted game and its shaders: since nxnative c22f30a
+      # the default cleanup leaves too little room (No space left on device in pack_ipa, run 44234970219)
+      - name: Free disk (other Xcodes, Android SDK, simulators, tool cache)
         run: |
           keep=$(xcode-select -p | sed 's|/Contents/Developer||')
           for x in /Applications/Xcode*.app; do
             [ -L "$x" ] || [ "$x" = "$keep" ] || sudo rm -rf "$x" &
           done
           sudo rm -rf "${ANDROID_HOME:-/nonexistent}" ~/Library/Android &
+          # an IPA build needs the iOS SDK inside Xcode, not the simulators
+          { xcrun simctl shutdown all; xcrun simctl delete all; xcrun simctl runtime delete all; sudo rm -rf ~/Library/Developer/CoreSimulator; } >/dev/null 2>&1 &
+          # preinstalled tools this build never uses; Python stays (Homebrew's python3 is used, but keep it to be safe)
+          for t in "${RUNNER_TOOL_CACHE:-$HOME/hostedtoolcache}"/*; do
+            [ "$(basename "$t")" = Python ] || sudo rm -rf "$t" &
+          done
+          sudo rm -rf ~/.ghcup /usr/local/lib/node_modules /usr/local/share/powershell /usr/local/aws-cli /usr/local/miniconda ~/Library/Caches/Homebrew >/dev/null 2>&1 &
           wait
           df -h /
 
